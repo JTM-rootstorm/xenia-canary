@@ -933,7 +933,7 @@ void SpirvShaderTranslator::ProcessLabel(uint32_t cf_index) {
   CloseExecConditionals();
 
   spv::Function& function = builder_->getBuildPoint()->getParent();
-  // Create the next switch case and fallthrough to it.
+  // Create the next switch case.
   spv::Block* new_case = new spv::Block(builder_->getUniqueId(), function);
   main_switch_op_->addImmediateOperand(cf_index);
   main_switch_op_->addIdOperand(new_case->getId());
@@ -942,7 +942,21 @@ void SpirvShaderTranslator::ProcessLabel(uint32_t cf_index) {
   new_case->addPredecessor(main_switch_header_);
   // The previous block may have already been terminated if was exece.
   if (!builder_->getBuildPoint()->isTerminated()) {
-    builder_->createBranch(new_case);
+    // Enter the next case through the main loop, like a jump to it, rather
+    // than by falling through to it. On Nvidia (595.104.02, 615.78.08), case
+    // fallthrough inside the main loop makes some vertex shaders produce
+    // nondeterministic positions (long spikes across the screen) or fault the
+    // GPU (Xid 31, GPCCLIENT_GCC). Found with a skinning vertex shader of
+    // 4D5307D5, reduced by disabling microcode instructions to three
+    // conditional jumps to a label and a predicated mad right before the
+    // label. Replays of the same draw are deterministic and correct with this
+    // change, when the same program is compiled from GLSL or HLSL, and on
+    // Lavapipe.
+    main_switch_next_pc_phi_operands_.push_back(
+        builder_->makeIntConstant(int(cf_index)));
+    main_switch_next_pc_phi_operands_.push_back(
+        builder_->getBuildPoint()->getId());
+    builder_->createBranch(main_loop_continue_);
   }
   function.addBlock(new_case);
   builder_->setBuildPoint(new_case);
